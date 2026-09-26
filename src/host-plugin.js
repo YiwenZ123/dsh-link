@@ -32,17 +32,103 @@ export async function apply(ctx) {
     }
   }
 
-  ctx.webServer.register('GET', '/dsh-link/state', async (_req, res) => {
-    await respond(res)
-  })
-  ctx.webServer.register('POST', '/dsh-link/pair', (req, res) => handle((b) => service.pair(b.host, b.port), req, res))
-  ctx.webServer.register('POST', '/dsh-link/code', (req, res) => handle((b) => service.submitCode(b.deviceId, b.code), req, res))
-  ctx.webServer.register('POST', '/dsh-link/switch', (req, res) => handle((b) => service.setEnabled(b.deviceId, b.enabled), req, res))
-  ctx.webServer.register('POST', '/dsh-link/unpair', (req, res) => handle((b) => service.unpair(b.deviceId), req, res))
-  ctx.webServer.register('POST', '/dsh-link/discoverable', (req, res) => handle((b) => service.setDiscoverable(b.value), req, res))
-  ctx.webServer.register('POST', '/dsh-link/display-name', (req, res) => handle((b) => service.setDisplayName(b.name), req, res))
+  const disposers = []
+
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: '/dsh-link/state',
+    handler: async (req, res) => {
+      if (req.method !== 'GET') {
+        res.writeHead(405, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: 'method not allowed' }))
+        return
+      }
+      await respond(res)
+    },
+  }))
+
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: '/dsh-link/pair',
+    handler: (req, res) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: 'method not allowed' }))
+        return
+      }
+      return handle((b) => service.pair(b.host, b.port), req, res)
+    },
+  }))
+
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: '/dsh-link/code',
+    handler: (req, res) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: 'method not allowed' }))
+        return
+      }
+      return handle((b) => service.submitCode(b.deviceId, b.code), req, res)
+    },
+  }))
+
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: '/dsh-link/switch',
+    handler: (req, res) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: 'method not allowed' }))
+        return
+      }
+      return handle((b) => service.setEnabled(b.deviceId, b.enabled), req, res)
+    },
+  }))
+
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: '/dsh-link/unpair',
+    handler: (req, res) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: 'method not allowed' }))
+        return
+      }
+      return handle((b) => service.unpair(b.deviceId), req, res)
+    },
+  }))
+
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: '/dsh-link/discoverable',
+    handler: (req, res) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: 'method not allowed' }))
+        return
+      }
+      return handle((b) => service.setDiscoverable(b.value), req, res)
+    },
+  }))
+
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: '/dsh-link/display-name',
+    handler: (req, res) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: 'method not allowed' }))
+        return
+      }
+      return handle((b) => service.setDisplayName(b.name), req, res)
+    },
+  }))
 
   ctx.effect(() => {
+    for (const dispose of disposers) {
+      try { dispose() } catch {}
+    }
     service.stop()
   })
 }
