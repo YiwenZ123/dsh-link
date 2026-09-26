@@ -4,6 +4,12 @@ import { createBonjourMdns } from './mdns.js'
 export const name = 'dsh-link'
 export const inject = ['webServer']
 
+// Failure reasons and display names are non-ASCII, and JSON.stringify emits
+// them as raw UTF-8 rather than escapes. Without the charset parameter a
+// client is free to decode those bytes as latin-1, which is exactly what
+// PowerShell's Invoke-RestMethod does: the tab showed mojibake for 鍦板潃涓嶅彲杈?// while the state itself was fine.
+const JSON_TYPE = 'application/json; charset=utf-8'
+
 export async function apply(ctx) {
   const service = await startLinkService({
     home: process.env.DSH_LINK_HOME,
@@ -17,7 +23,7 @@ export async function apply(ctx) {
   }
 
   async function respond(res) {
-    res.writeHead(200, { 'content-type': 'application/json' })
+    res.writeHead(200, { 'content-type': JSON_TYPE })
     res.end(JSON.stringify(service.snapshot()))
   }
 
@@ -27,7 +33,7 @@ export async function apply(ctx) {
       await fn(body)
       await respond(res)
     } catch (error) {
-      res.writeHead(400, { 'content-type': 'application/json' })
+      res.writeHead(400, { 'content-type': JSON_TYPE })
       res.end(JSON.stringify({ error: error?.message || String(error) }))
     }
   }
@@ -39,7 +45,7 @@ export async function apply(ctx) {
     path: '/dsh-link/state',
     handler: async (req, res) => {
       if (req.method !== 'GET') {
-        res.writeHead(405, { 'content-type': 'application/json' })
+        res.writeHead(405, { 'content-type': JSON_TYPE })
         res.end(JSON.stringify({ error: 'method not allowed' }))
         return
       }
@@ -52,7 +58,7 @@ export async function apply(ctx) {
     path: '/dsh-link/pair',
     handler: (req, res) => {
       if (req.method !== 'POST') {
-        res.writeHead(405, { 'content-type': 'application/json' })
+        res.writeHead(405, { 'content-type': JSON_TYPE })
         res.end(JSON.stringify({ error: 'method not allowed' }))
         return
       }
@@ -65,7 +71,7 @@ export async function apply(ctx) {
     path: '/dsh-link/code',
     handler: (req, res) => {
       if (req.method !== 'POST') {
-        res.writeHead(405, { 'content-type': 'application/json' })
+        res.writeHead(405, { 'content-type': JSON_TYPE })
         res.end(JSON.stringify({ error: 'method not allowed' }))
         return
       }
@@ -78,7 +84,7 @@ export async function apply(ctx) {
     path: '/dsh-link/switch',
     handler: (req, res) => {
       if (req.method !== 'POST') {
-        res.writeHead(405, { 'content-type': 'application/json' })
+        res.writeHead(405, { 'content-type': JSON_TYPE })
         res.end(JSON.stringify({ error: 'method not allowed' }))
         return
       }
@@ -91,7 +97,7 @@ export async function apply(ctx) {
     path: '/dsh-link/unpair',
     handler: (req, res) => {
       if (req.method !== 'POST') {
-        res.writeHead(405, { 'content-type': 'application/json' })
+        res.writeHead(405, { 'content-type': JSON_TYPE })
         res.end(JSON.stringify({ error: 'method not allowed' }))
         return
       }
@@ -104,7 +110,7 @@ export async function apply(ctx) {
     path: '/dsh-link/discoverable',
     handler: (req, res) => {
       if (req.method !== 'POST') {
-        res.writeHead(405, { 'content-type': 'application/json' })
+        res.writeHead(405, { 'content-type': JSON_TYPE })
         res.end(JSON.stringify({ error: 'method not allowed' }))
         return
       }
@@ -117,7 +123,7 @@ export async function apply(ctx) {
     path: '/dsh-link/display-name',
     handler: (req, res) => {
       if (req.method !== 'POST') {
-        res.writeHead(405, { 'content-type': 'application/json' })
+        res.writeHead(405, { 'content-type': JSON_TYPE })
         res.end(JSON.stringify({ error: 'method not allowed' }))
         return
       }

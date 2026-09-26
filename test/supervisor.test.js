@@ -83,3 +83,25 @@ test('a failed dial from a discovered address does not escape as an unhandled re
     process.off('unhandledRejection', onUnhandled)
   }
 })
+
+test('a failed dial from a discovered address hands the retry to the backoff', async () => {
+  // Absorbing the rejection keeps the process alive, but the discovered
+  // address is the one worth retrying: dropping the attempt leaves a peer that
+  // answered a browse and then went quiet with nothing scheduled at all.
+  const waits = []
+  const peers = [{ deviceId: 'b', enabled: true, lastHost: 'old', lastPort: 1 }]
+  const supervisor = createSupervisor({
+    peers,
+    dial: () => Promise.reject(new Error('地址不可达')),
+    now: () => 0,
+    schedule: (fn, ms) => { waits.push(ms); return { fn, ms, cancelled: false } },
+    cancel: (handle) => { handle.cancelled = true },
+  })
+  try {
+    await supervisor.noteAddress('b', 'new', 2, false)
+    assert.deepEqual(waits, [1000])
+    assert.equal(peers[0].lastHost, 'new')
+  } finally {
+    supervisor.stop()
+  }
+})
