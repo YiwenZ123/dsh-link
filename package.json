@@ -6,7 +6,8 @@
   "engines": { "node": ">=22" },
   "exports": {
     ".": "./src/host-plugin.js",
-    "./client": "./src/client.js"
+    "./client": "./src/client.js",
+    "./package.json": "./package.json"
   },
   "dsh": {
     "client": {

@@ -155,7 +155,7 @@ window.__ModuleLoader__.load({
           jsx(LocalSection, { local: state.local }),
           jsx(PeersSection, { peers: state.peers }),
           jsx(NearbySection, { nearby: state.nearby }),
-          jsx(ManualSection),
+          jsx(ManualSection, {}),
         ],
       })
     }
