@@ -362,7 +362,10 @@ export async function startLinkService({
         lastHost: conn.host,
         lastPort: listenPort,
         listenPort,
-        enabled: true,
+        // A connection that authenticates is not consent to be connected: the
+        // peer dials back the moment the switch closes the socket, and writing
+        // `true` here flipped the switch back on by itself.
+        enabled: existing?.enabled ?? true,
         pairedAt: existing?.pairedAt || Date.now(),
         hadConnected: true,
         failed: false,

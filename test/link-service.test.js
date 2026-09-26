@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -395,5 +395,35 @@ test('a discovered address that stops answering does not take the host boot down
     if (service) await service.stop()
     await rm(home, { recursive: true, force: true })
     process.off('unhandledRejection', onUnhandled)
+  }
+})
+
+test('switching a peer off survives the peer dialing back in', async () => {
+  // Turning the switch off closes the socket, the peer notices the drop and
+  // dials straight back. That inbound connection used to write `enabled: true`
+  // unconditionally, so the switch flipped itself back on within a second and
+  // the user could not keep a peer off.
+  const leftHome = await tempHome()
+  const rightHome = await tempHome()
+  const left = await startLinkService({ home: leftHome, listenPort: 0 })
+  const right = await startLinkService({ home: rightHome, listenPort: 0 })
+  try {
+    await left.pair('127.0.0.1', right.snapshot().local.port)
+    const pending = await waitFor(() => left.snapshot().pending[0]?.code ? left.snapshot().pending[0] : null)
+    const rightPending = await waitFor(() => right.snapshot().pending[0] ? right.snapshot().pending[0] : null)
+    await right.submitCode(rightPending.deviceId, pending.code)
+    const peerId = (await waitForConnected(left)).deviceId
+
+    await left.setEnabled(peerId, false)
+    await new Promise((resolve) => setTimeout(resolve, 3000))
+    assert.equal(left.snapshot().peers[0].enabled, false)
+    assert.equal(left.snapshot().peers[0].status, 'disabled')
+    const onDisk = JSON.parse(await readFile(path.join(leftHome, 'peers', `${peerId}.json`), 'utf8'))
+    assert.equal(onDisk.enabled, false)
+  } finally {
+    await left.stop()
+    await right.stop()
+    await rm(leftHome, { recursive: true, force: true })
+    await rm(rightHome, { recursive: true, force: true })
   }
 })
