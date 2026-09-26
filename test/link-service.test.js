@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -334,5 +334,66 @@ test('nearby drops this machine itself and services whose address does not answe
     }
   } finally {
     await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('a discovered address that stops answering does not take the host boot down', async () => {
+  // Reproduces the Windows crash: the peer record points at an address that
+  // no longer answers, mDNS discovers that peer, and the browse callback dials
+  // it. The rejection used to escape as an unhandled rejection, which surfaced
+  // in the plugin's apply() as `fatal load failure` and killed the whole dsh
+  // process — no listen port, no advertisement, nothing to reconnect to.
+  const home = await tempHome()
+  const rejections = []
+  const onUnhandled = (reason) => rejections.push(reason)
+  process.on('unhandledRejection', onUnhandled)
+  let service
+  try {
+    const { createMdns } = await import('../src/mdns.js')
+    const peerId = 'cccc1111-2222-4333-8444-555555555555'
+    const peersDir = path.join(home, 'peers')
+    await mkdir(peersDir, { recursive: true })
+    await writeFile(path.join(peersDir, `${peerId}.json`), JSON.stringify({
+      deviceId: peerId,
+      displayName: 'gone',
+      publicKey: 'x',
+      lastHost: '127.0.0.1',
+      lastPort: 1,
+      enabled: true,
+      pairedAt: Date.now(),
+      hadConnected: true,
+      failed: false,
+      failure: null,
+    }))
+
+    let emit = null
+    const mdns = createMdns({
+      publish: (service_) => service_,
+      unpublish: () => {},
+      browse: (_query, onService) => { emit = onService },
+      stopBrowse: () => {},
+    })
+    // The boot itself must complete: a dial failure may not reach apply().
+    service = await startLinkService({
+      home,
+      listenPort: 0,
+      mdns,
+      dialImpl: () => Promise.reject(new Error('地址不可达')),
+    })
+    emit({
+      host: '127.0.0.1',
+      port: 1,
+      txt: { deviceId: peerId, displayName: 'gone', ver: '1' },
+    })
+    await waitFor(() => service.snapshot().peers[0]?.lastPort === 1, 2000)
+    assert.equal(service.snapshot().peers[0].lastHost, '127.0.0.1')
+    // A known peer is never offered as a nearby candidate to pair with.
+    assert.equal(service.snapshot().nearby.length, 0)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    assert.deepEqual(rejections, [])
+  } finally {
+    if (service) await service.stop()
+    await rm(home, { recursive: true, force: true })
+    process.off('unhandledRejection', onUnhandled)
   }
 })

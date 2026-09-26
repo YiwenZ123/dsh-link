@@ -55,3 +55,31 @@ test('a new address while connected updates the record and does not dial', async
   await supervisor.noteAddress('b', 'newer', 3, false)
   assert.equal(dials.at(-1), 'newer')
 })
+
+test('a failed dial from a discovered address does not escape as an unhandled rejection', async () => {
+  // mDNS hands the browse callback a new address and the callback has no try
+  // around noteAddress. A rejection that escapes here reaches the plugin's
+  // apply() as a fatal load failure, which takes the whole dsh process down.
+  const rejections = []
+  const onUnhandled = (reason) => rejections.push(reason)
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    const peers = [{ deviceId: 'b', enabled: true, lastHost: 'old', lastPort: 1 }]
+    const supervisor = createSupervisor({
+      peers,
+      dial: () => Promise.reject(new Error('地址不可达')),
+      now: () => 0,
+      schedule: () => ({ cancelled: false }),
+      cancel: (handle) => { handle.cancelled = true },
+    })
+    await supervisor.noteAddress('b', 'new', 2, false)
+    // The address is still recorded even though the dial failed.
+    assert.equal(peers[0].lastHost, 'new')
+    assert.equal(peers[0].lastPort, 2)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.deepEqual(rejections, [])
+    supervisor.stop()
+  } finally {
+    process.off('unhandledRejection', onUnhandled)
+  }
+})

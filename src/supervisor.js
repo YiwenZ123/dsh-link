@@ -44,7 +44,15 @@ export function createSupervisor({ peers, dial, schedule, cancel }) {
       const current = peer(deviceId)
       current.lastHost = host
       current.lastPort = port
-      if (!connected && current.enabled) await dial(current)
+      if (connected || !current.enabled) return
+      // The caller is the mDNS browse callback, which has no try of its own. A
+      // dial that rejects here must not escape: an unhandled rejection reaches
+      // the plugin's apply() as a fatal load failure and takes dsh down with
+      // it. The armed backoff already owns retrying, so the failure is dropped
+      // after the record is updated.
+      try {
+        await dial(current)
+      } catch {}
     },
     stop() {
       for (const deviceId of timers.keys()) clear(deviceId)
