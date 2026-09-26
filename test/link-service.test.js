@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { startLinkService } from '../src/link-service.js'
+import { startLinkService, __resolveCollision } from '../src/link-service.js'
 
 async function tempHome() {
   return mkdtemp(path.join(tmpdir(), 'dsh-link-home-'))
@@ -96,4 +96,17 @@ test('switching off closes the socket and switching on connects again', async ()
     await rm(leftHome, { recursive: true, force: true })
     await rm(rightHome, { recursive: true, force: true })
   }
+})
+
+test('resolveCollision keeps the socket dialed by the smaller deviceId', () => {
+  const localDeviceId = '00000000-0000-4000-8000-000000000000'
+  const remoteDeviceId = 'ffffffff-ffff-4fff-bfff-ffffffffffff'
+  const localDialed = { localDialed: true }
+  const remoteDialed = { localDialed: false }
+  // smaller-id side: conn is the local dial (outgoing), existing is the inbound.
+  const { keeper: keptSmall } = __resolveCollision(localDeviceId, remoteDeviceId, localDialed, remoteDialed)
+  assert.equal(keptSmall, localDialed)
+  // larger-id side: conn is the inbound, existing is the local dial (outgoing).
+  const { keeper: keptLarge } = __resolveCollision(remoteDeviceId, localDeviceId, remoteDialed, localDialed)
+  assert.equal(keptLarge, remoteDialed)
 })

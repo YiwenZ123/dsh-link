@@ -28,6 +28,20 @@ function statusFor(peer, conns) {
   return peer.hadConnected ? 'reconnecting' : 'connecting'
 }
 
+function resolveCollision(localDeviceId, remoteDeviceId, conn, existing) {
+  // chooseWinner returns 'local' when the connection dialed by this
+  // machine should be kept, and 'remote' when the connection dialed by
+  // the peer should be kept. Map that onto conn/existing using each
+  // socket's own localDialed flag — neither conn nor existing is
+  // always the locally-dialed one.
+  const winner = chooseWinner({ localDeviceId, remoteDeviceId, localDialed: conn.localDialed })
+  const localDialedConn = conn.localDialed ? conn : existing
+  const remoteDialedConn = conn.localDialed ? existing : conn
+  const keeper = winner === 'local' ? localDialedConn : remoteDialedConn
+  const loser = keeper === conn ? existing : conn
+  return { keeper, loser, winner }
+}
+
 export async function startLinkService({
   home,
   listenPort = 0,
@@ -111,34 +125,30 @@ export async function startLinkService({
     try { conn.socket.close() } catch {}
   }
 
-  function rekeyConn(conn, newKey) {
-    for (const [key, value] of conns.entries()) {
-      if (value === conn) {
-        conns.delete(key)
-        break
-      }
+  function registerConn(conn, key) {
+    for (const [k, value] of conns.entries()) {
+      if (value === conn) { conns.delete(k); break }
     }
-    const existing = conns.get(newKey)
+    const existing = conns.get(key)
     if (existing && existing !== conn) {
-      // Two connections for the same deviceId: pick the winner, close the loser.
-      const winner = chooseWinner({
-        localDeviceId: identity.deviceId,
-        remoteDeviceId: newKey,
-        localDialed: conn.localDialed,
-      })
-      const loser = winner === 'local' ? existing : conn
-      const keeper = winner === 'local' ? conn : existing
+      const { keeper, loser } = resolveCollision(identity.deviceId, key, conn, existing)
+      loser.collisionLoser = true
+      loser.socket.suppressPeerClose = true
       try { loser.socket.close() } catch {}
-      pending.delete(newKey)
-      pairResolvers.delete(newKey)
+      pending.delete(key)
+      pairResolvers.delete(key)
       if (loser === conn) {
         // We are the loser; keep the existing conn registered.
         return false
       }
-      conns.delete(newKey)
+      conns.delete(key)
     }
-    conns.set(newKey, conn)
+    conns.set(key, conn)
     return true
+  }
+
+  function rekeyConn(conn, newKey) {
+    return registerConn(conn, newKey)
   }
 
   function makeHandshake(socket, role, knownPeer, attemptKey) {
@@ -168,7 +178,13 @@ export async function startLinkService({
       port: remotePort,
       remoteDeviceId: knownPeer?.deviceId || null,
     }
-    conns.set(knownPeer?.deviceId || socket, conn)
+    if (knownPeer) {
+      // An outgoing reconnect dial may collide with an inbound connection
+      // already registered under the same deviceId. Resolve it now.
+      if (!registerConn(conn, knownPeer.deviceId)) return conn
+    } else {
+      conns.set(socket, conn)
+    }
 
     socket.on('message', (data) => {
       let message
@@ -295,9 +311,12 @@ export async function startLinkService({
     pending.delete(deviceId)
     pairResolvers.delete(deviceId)
     const peer = findPeer(deviceId)
-    if (peer && peer.enabled && !stopped) {
-      peer.failed = false
-      supervisor.noteDropped(deviceId)
+    if (peer && peer.enabled && !stopped && !conn.collisionLoser) {
+      const keeper = conns.get(deviceId)
+      if (!keeper || keeper.socket.readyState !== 1) {
+        peer.failed = false
+        supervisor.noteDropped(deviceId)
+      }
     }
   }
 
@@ -346,11 +365,11 @@ export async function startLinkService({
 
   async function pair(host, port) {
     const socket = await dialImpl({ host, port })
-    const conn = setupSocket(socket, true, host, port, null)
     const codeReady = new Promise((resolve) => pairResolvers.set(socket, resolve))
     const closed = new Promise((resolve, reject) => {
       socket.once('close', () => reject(new Error('地址不可达')))
     })
+    setupSocket(socket, true, host, port, null)
     await Promise.race([codeReady, closed])
   }
 
@@ -427,4 +446,8 @@ export async function startLinkService({
     setDisplayName,
     stop,
   }
+}
+
+export function __resolveCollision(localDeviceId, remoteDeviceId, conn, existing) {
+  return resolveCollision(localDeviceId, remoteDeviceId, conn, existing)
 }
