@@ -1,5 +1,20 @@
 const SERVICE = 'dsh-link'
 
+/**
+ * A browse result's usable address, preferring a literal IPv4 over the
+ * advertised host name. The host name is only resolvable through multicast
+ * DNS, and a machine whose resolver answers with something else — a VPN
+ * adapter, a proxy's fake-IP range — makes every later dial go to a dead
+ * address while the name itself looks perfectly valid.
+ * @param service - one browse result.
+ * @returns the address to dial, or the host name when no IPv4 was advertised.
+ */
+function dialableHost(service) {
+  const addresses = Array.isArray(service.addresses) ? service.addresses : []
+  const ipv4 = addresses.find((address) => typeof address === 'string' && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(address))
+  return ipv4 ?? service.host
+}
+
 export function createMdns({ publish, unpublish, browse, stopBrowse }) {
   let published = null
   let listening = false
@@ -18,7 +33,7 @@ export function createMdns({ publish, unpublish, browse, stopBrowse }) {
           const device = {
             deviceId: service.txt.deviceId,
             displayName: service.txt.displayName,
-            host: service.host,
+            host: dialableHost(service),
             port: service.port,
           }
           for (const handler of handlers) handler(device)

@@ -13,6 +13,7 @@ import path from 'node:path'
 
 const DEFAULT_LISTEN_PORT = 48721
 const PORT_RANGE_SIZE = 10
+const IPV4_RE = /^\d{1,3}(?:\.\d{1,3}){3}$/
 
 const noopMdns = createMdns({
   publish: () => null,
@@ -157,6 +158,23 @@ export async function startLinkService({
 
   function findPeer(deviceId) {
     return peers.find((peer) => peer.deviceId === deviceId) || null
+  }
+
+  /**
+   * The address to remember for a peer we just reached. A host name is only
+   * dialable through multicast DNS, and a machine whose resolver answers with
+   * something else — a VPN adapter, a proxy's fake-IP range — turns every
+   * later redial into a connection to a dead address while the record still
+   * looks valid. A literal address outranks a name: the address that was
+   * dialed when it is one, otherwise the remote address the socket carries.
+   * @param host - the address this connection was dialed or accepted on.
+   * @param socket - the socket that completed the handshake.
+   * @returns the address to store in the peer record.
+   */
+  function dialableHost(host, socket) {
+    if (typeof host === 'string' && IPV4_RE.test(host)) return host
+    const remote = socket?._socket?.remoteAddress?.replace(/^::ffff:/, '')
+    return IPV4_RE.test(remote) ? remote : host
   }
 
   async function persistPeer(peer) {
@@ -359,7 +377,7 @@ export async function startLinkService({
         deviceId: outcome.peer.deviceId,
         displayName: outcome.peer.displayName,
         publicKey: outcome.peer.publicKey,
-        lastHost: conn.host,
+        lastHost: dialableHost(conn.host, conn.socket),
         lastPort: listenPort,
         listenPort,
         // A connection that authenticates is not consent to be connected: the
