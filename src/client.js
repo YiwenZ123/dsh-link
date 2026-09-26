@@ -104,13 +104,15 @@ window.__ModuleLoader__.load({
     }
 
     function PendingRow({ entry }) {
-      if (entry.role === 'initiator' && entry.code) {
+      const [code, setCode] = React.useState('')
+      if (entry.role === 'initiator') {
         return jsx('div', {
           style: { fontSize: '2rem', fontWeight: 'bold' },
-          children: `${entry.displayName || entry.deviceId.slice(0, 8)}: ${entry.code}`,
+          children: entry.code
+            ? `${entry.displayName || entry.deviceId.slice(0, 8)}: ${entry.code}`
+            : `${entry.displayName || entry.deviceId.slice(0, 8)}: ——`,
         })
       }
-      const [code, setCode] = React.useState('')
       return jsx('div', {
         children: [
           jsx('span', { children: `${entry.displayName || entry.deviceId.slice(0, 8)} 想要配对` }),
