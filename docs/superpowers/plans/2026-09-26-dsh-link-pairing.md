@@ -1665,7 +1665,7 @@ Expected: PASS
 
 ```bash
 cd ~/.dsh/profiles/web
-pnpm add /Users/yiwen/Projects/dsh-link
+pnpm add /path/to/dsh-link
 ```
 
 在 `~/.dsh/profiles/web/cordis.patch.yml` 的数组里加入：
