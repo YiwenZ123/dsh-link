@@ -125,10 +125,10 @@ export async function apply(ctx) {
     },
   }))
 
-  ctx.effect(() => {
+  ctx.effect(() => () => {
     for (const dispose of disposers) {
       try { dispose() } catch {}
     }
-    service.stop()
+    return service.stop()
   })
 }

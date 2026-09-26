@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
+import { randomBytes } from 'node:crypto'
 import test from 'node:test'
 import { createHandshake } from '../src/handshake.js'
-import { generateIdentity } from '../src/keys.js'
+import { generateIdentity, signNonce } from '../src/keys.js'
 import { createPairingAttempt } from '../src/pairing-attempt.js'
 
 function pair(leftIdentity, rightIdentity, options = {}) {
@@ -85,4 +86,57 @@ test('protocol version 2 fails without saving a new peer', () => {
   session.initiator.start()
   assert.equal(session.acceptor.outcome.reason, '版本不一致')
   assert.equal(session.acceptor.outcome.saved, false)
+})
+
+test('a proof for a different nonce than the outstanding challenge is rejected', () => {
+  const left = generateIdentity({ displayName: 'mac', listenPort: 1 })
+  const right = generateIdentity({ displayName: 'win', listenPort: 2 })
+  const sent = []
+  const acceptor = createHandshake({
+    role: 'acceptor',
+    identity: right,
+    knownPeer: { deviceId: left.deviceId, publicKey: left.publicKey, displayName: 'mac' },
+    attempt: createPairingAttempt(),
+    now: () => 0,
+    send: (message) => sent.push(message),
+  })
+  acceptor.receive({
+    type: 'hello',
+    protocolVersion: 1,
+    deviceId: left.deviceId,
+    displayName: 'mac',
+    publicKey: left.publicKey,
+    ephemeralPublicKey: 'x',
+  })
+  const challenge = sent.find((message) => message.type === 'auth.challenge')
+  assert.ok(challenge, 'acceptor should send a challenge')
+  // Replay a proof for a different nonce than the one currently outstanding.
+  const staleNonce = randomBytes(32).toString('base64')
+  const staleProof = signNonce(left.privateKey, Buffer.from(staleNonce, 'base64'))
+  acceptor.receive({ type: 'auth.proof', nonce: staleNonce, proof: staleProof })
+  assert.equal(acceptor.outcome.ok, false)
+  assert.equal(acceptor.outcome.reason, '密钥不符')
+  // A proof for the real outstanding nonce still authenticates afterwards.
+  const realProof = signNonce(left.privateKey, Buffer.from(challenge.nonce, 'base64'))
+  // The failed handshake is terminal, so a fresh session must reject replay too.
+  const acceptorAgain = createHandshake({
+    role: 'acceptor',
+    identity: right,
+    knownPeer: { deviceId: left.deviceId, publicKey: left.publicKey, displayName: 'mac' },
+    attempt: createPairingAttempt(),
+    now: () => 0,
+    send: () => {},
+  })
+  acceptorAgain.receive({
+    type: 'hello',
+    protocolVersion: 1,
+    deviceId: left.deviceId,
+    displayName: 'mac',
+    publicKey: left.publicKey,
+    ephemeralPublicKey: 'x',
+  })
+  acceptorAgain.receive({ type: 'auth.proof', nonce: staleNonce, proof: staleProof })
+  assert.equal(acceptorAgain.outcome.ok, false)
+  assert.equal(acceptorAgain.outcome.reason, '密钥不符')
+  void realProof
 })

@@ -1,7 +1,16 @@
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+function assertUuidDeviceId(deviceId) {
+  if (typeof deviceId !== 'string' || !UUID_RE.test(deviceId)) {
+    throw new Error('invalid deviceId')
+  }
+}
+
 function peerPath(dir, deviceId) {
+  assertUuidDeviceId(deviceId)
   return path.join(dir, 'peers', `${deviceId}.json`)
 }
 

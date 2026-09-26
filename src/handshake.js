@@ -22,6 +22,7 @@ export function createHandshake({ role, identity, knownPeer, attempt, now, send 
   let code = null
   let outcome = null
   let provedPeer = false
+  let expectedNonce = null
 
   function sendHello() {
     localHello = {
@@ -56,7 +57,9 @@ export function createHandshake({ role, identity, knownPeer, attempt, now, send 
   }
 
   function sendChallenge() {
-    send({ type: 'auth.challenge', nonce: randomBytes(32).toString('base64') })
+    const nonce = randomBytes(32).toString('base64')
+    expectedNonce = nonce
+    send({ type: 'auth.challenge', nonce })
   }
 
   return {
@@ -122,11 +125,18 @@ export function createHandshake({ role, identity, knownPeer, attempt, now, send 
         return
       }
       if (message.type === 'auth.proof') {
+        if (!expectedNonce || message.nonce !== expectedNonce) {
+          outcome = { ok: false, reason: '密钥不符', saved: false }
+          expectedNonce = null
+          return
+        }
         const nonce = Buffer.from(message.nonce, 'base64')
         if (!verifyNonce(remoteHello.publicKey, nonce, message.proof)) {
+          expectedNonce = null
           outcome = { ok: false, reason: '密钥不符', saved: false }
           return
         }
+        expectedNonce = null
         provedPeer = true
         if (role === 'acceptor') return
         finish()

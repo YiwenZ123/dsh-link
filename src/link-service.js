@@ -7,6 +7,8 @@ import { createSupervisor } from './supervisor.js'
 import { chooseWinner, dial as defaultDial, listen as defaultListen } from './wire.js'
 import { createMdns } from './mdns.js'
 import { decodeFrame, encodeFrame } from './frames.js'
+import os from 'node:os'
+import path from 'node:path'
 
 const noopMdns = createMdns({
   publish: () => null,
@@ -49,8 +51,9 @@ export async function startLinkService({
   listenImpl = defaultListen,
   mdns = noopMdns,
 } = {}) {
-  const identityStore = createIdentityStore(home)
-  const peerStore = createPeerStore(home)
+  const linkHome = home || path.join(os.homedir(), '.dsh', 'link')
+  const identityStore = createIdentityStore(linkHome)
+  const peerStore = createPeerStore(linkHome)
 
   let identity = await identityStore.load()
   if (!identity) {
@@ -65,6 +68,7 @@ export async function startLinkService({
   const conns = new Map() // deviceId -> conn (or socket->conn until deviceId known)
   const pending = new Map() // deviceId -> { deviceId, role, code, host, port }
   let peers = await peerStore.list()
+  const nearby = new Map() // deviceId -> { deviceId, displayName, host, port }
   const attempts = new Map() // deviceId -> attempt
   const pairResolvers = new Map() // tempKey -> resolve
   const outcomeResolvers = new Map() // deviceId -> resolve
@@ -94,9 +98,11 @@ export async function startLinkService({
       lastHost: peer.lastHost,
       lastPort: peer.lastPort,
       enabled: peer.enabled,
+      failure: peer.failure || null,
     }))
     const pendingView = [...pending.values()].map((entry) => ({ ...entry }))
-    return { local, peers: peersView, pending: pendingView }
+    const nearbyView = [...nearby.values()].map((item) => ({ ...item }))
+    return { local, peers: peersView, pending: pendingView, nearby: nearbyView }
   }
 
   function findPeer(deviceId) {
@@ -281,6 +287,8 @@ export async function startLinkService({
         enabled: true,
         pairedAt: existing?.pairedAt || Date.now(),
         hadConnected: true,
+        failed: false,
+        failure: null,
       }
       await persistPeer(updated)
       const peerRecord = findPeer(peerId)
@@ -292,14 +300,17 @@ export async function startLinkService({
       const resolve = outcomeResolvers.get(peerId)
       if (resolve) { outcomeResolvers.delete(peerId); resolve() }
     } else {
-      const peerRecord = findPeer(peerId)
+      const failId = conn.remoteDeviceId || conn.knownPeer?.deviceId || peerId
+      const peerRecord = failId ? findPeer(failId) : null
       if (peerRecord) {
         peerRecord.failed = true
-        peerRecord.failReason = outcome.reason || 'failed'
+        if (outcome.reason === '地址不可达' || outcome.reason === '密钥不符' || outcome.reason === '版本不一致') {
+          peerRecord.failure = outcome.reason
+        }
       }
-      pending.delete(peerId)
-      const resolve = outcomeResolvers.get(peerId)
-      if (resolve) { outcomeResolvers.delete(peerId); resolve() }
+      pending.delete(failId)
+      const resolve = outcomeResolvers.get(failId)
+      if (resolve) { outcomeResolvers.delete(failId); resolve() }
     }
   }
 
@@ -315,6 +326,7 @@ export async function startLinkService({
       const keeper = conns.get(deviceId)
       if (!keeper || keeper.socket.readyState !== 1) {
         peer.failed = false
+        peer.failure = null
         supervisor.noteDropped(deviceId)
       }
     }
@@ -328,7 +340,7 @@ export async function startLinkService({
         setupSocket(socket, true, peer.lastHost, peer.lastPort, peer)
       } catch (error) {
         peer.failed = true
-        peer.failReason = '地址不可达'
+        peer.failure = '地址不可达'
         throw error
       }
     },
@@ -363,6 +375,23 @@ export async function startLinkService({
 
   mdns.start(identity)
 
+  mdns.onNearby((device) => {
+    if (!device?.deviceId) return
+    const peer = findPeer(device.deviceId)
+    if (peer) {
+      const conn = conns.get(device.deviceId)
+      const connected = !!conn && conn.state === 'open' && conn.socket?.readyState === 1
+      supervisor.noteAddress(device.deviceId, device.host, device.port, connected)
+      return
+    }
+    nearby.set(device.deviceId, {
+      deviceId: device.deviceId,
+      displayName: device.displayName,
+      host: device.host,
+      port: device.port,
+    })
+  })
+
   async function pair(host, port) {
     const socket = await dialImpl({ host, port })
     const codeReady = new Promise((resolve) => pairResolvers.set(socket, resolve))
@@ -374,12 +403,7 @@ export async function startLinkService({
   }
 
   async function submitCode(deviceId, code) {
-    let conn = conns.get(deviceId)
-    if (!conn) {
-      for (const value of conns.values()) {
-        if (value.role === 'acceptor') { conn = value; break }
-      }
-    }
+    const conn = conns.get(deviceId)
     if (!conn) throw new Error('no pending pairing')
     const key = conn.remoteDeviceId || deviceId
     const done = new Promise((resolve) => outcomeResolvers.set(key, resolve))
@@ -392,10 +416,12 @@ export async function startLinkService({
     if (!peer) return
     peer.enabled = enabled
     peer.failed = false
+    peer.failure = null
     await peerStore.put(peer)
     if (!enabled) {
       closeConn(deviceId)
       peer.failed = false
+      peer.failure = null
       supervisor.setEnabled(deviceId, false)
     } else {
       supervisor.setEnabled(deviceId, true)

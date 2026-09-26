@@ -30,7 +30,7 @@ export function listen(identity, onSocket) {
   return new Promise((resolve, reject) => {
     server.once('error', reject)
     server.once('listening', () => {
-      server.on('connection', (socket) => onSocket(socket))
+      server.on('connection', (socket, request) => onSocket(socket, request))
       resolve({
         port: server.address().port,
         close: () => new Promise((done) => server.close(() => done())),

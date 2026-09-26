@@ -14,7 +14,7 @@ export function createIdentityStore(dir) {
     },
     async save(identity) {
       await mkdir(dir, { recursive: true })
-      await writeFile(file, JSON.stringify(identity))
+      await writeFile(file, JSON.stringify(identity), { mode: 0o600 })
     },
   }
 }

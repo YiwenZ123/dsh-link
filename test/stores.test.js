@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -22,8 +22,9 @@ test('identity and peers survive a new store on the same directory', async () =>
     const identity = generateIdentity({ displayName: 'mac', listenPort: 48721 })
     await identities.save(identity)
     const peers = createPeerStore(dir)
+    const peerId = '11111111-2222-4333-8444-555555555555'
     await peers.put({
-      deviceId: 'peer-1',
+      deviceId: peerId,
       displayName: 'win',
       publicKey: 'cHVi',
       lastHost: '127.0.0.1',
@@ -34,10 +35,26 @@ test('identity and peers survive a new store on the same directory', async () =>
     const loaded = await createIdentityStore(dir).load()
     assert.equal(loaded.privateKey, identity.privateKey)
     assert.equal(loaded.discoverable, true)
-    const again = await createPeerStore(dir).get('peer-1')
+    const again = await createPeerStore(dir).get(peerId)
     assert.equal(again.displayName, 'win')
-    await createPeerStore(dir).remove('peer-1')
-    assert.equal(await createPeerStore(dir).get('peer-1'), null)
+    await createPeerStore(dir).remove(peerId)
+    assert.equal(await createPeerStore(dir).get(peerId), null)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a deviceId containing .. or a slash is rejected by the peer store', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'dsh-link-'))
+  try {
+    const peers = createPeerStore(dir)
+    for (const bad of ['..', 'a..b', 'a/b', 'a\\b', 'peer-1', 'not-a-uuid']) {
+      await assert.rejects(peers.put({ deviceId: bad, displayName: 'x', publicKey: 'k' }), /invalid deviceId/)
+    }
+    await assert.rejects(peers.get('..'), /invalid deviceId/)
+    await assert.rejects(peers.remove('a/b'), /invalid deviceId/)
+    const names = await readdir(path.join(dir, 'peers')).catch(() => [])
+    assert.equal(names.length, 0)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

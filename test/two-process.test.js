@@ -36,10 +36,11 @@ test('two OS processes pair and survive a restart', async () => {
   })
   const leftState = await paired.json()
   const code = leftState.pending[0].code
+  const rightState = await (await fetch(`http://127.0.0.1:${rightReady.uiPort}/dsh-link/state`)).json()
   await fetch(`http://127.0.0.1:${rightReady.uiPort}/dsh-link/code`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ deviceId: leftState.pending[0].deviceId, code }),
+    body: JSON.stringify({ deviceId: rightState.pending[0].deviceId, code }),
   })
   left.child.kill()
   right.child.kill()
