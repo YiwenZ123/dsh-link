@@ -7,8 +7,12 @@ import { createSupervisor } from './supervisor.js'
 import { chooseWinner, dial as defaultDial, listen as defaultListen } from './wire.js'
 import { createMdns } from './mdns.js'
 import { decodeFrame, encodeFrame } from './frames.js'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+
+const DEFAULT_LISTEN_PORT = 48721
+const PORT_RANGE_SIZE = 10
 
 const noopMdns = createMdns({
   publish: () => null,
@@ -28,6 +32,51 @@ function statusFor(peer, conns) {
   if (conn?.state === 'open') return 'connected'
   if (peer.failed) return 'failed'
   return peer.hadConnected ? 'reconnecting' : 'connecting'
+}
+
+/**
+ * The port to dial for one peer, in order of evidence:
+ * 1. the port a connection to this peer actually completed on;
+ * 2. the listener it announced on the connection that just dropped — fresher
+ *    than anything on disk, and the only source of truth for a dial-in peer
+ *    whose source port landed in `lastPort`;
+ * 3. the listener stored with the record;
+ * 4. the stored port itself, which is all a version 1 peer that never
+ *    announced anything has.
+ * @param peer - the stored peer record.
+ * @param connectedPort - a port that completed a handshake, if we have seen one.
+ * @param declaredPort - the port this peer announced on the latest connection.
+ * @returns the port to dial.
+ */
+function portToDial(peer, connectedPort, declaredPort) {
+  if (connectedPort !== undefined) return connectedPort
+  if (declaredPort !== undefined) return declaredPort
+  if (peer.listenPort !== undefined) return peer.listenPort
+  return peer.lastPort
+}
+
+/**
+ * Whether the advertised address accepts a connection right now. A browse
+ * result can outlive the process that published it, and offering a dead host
+ * to pair with is worse than showing nothing.
+ * @param host - the advertised host name or address.
+ * @param port - the advertised port.
+ * @param timeoutMs - how long to wait before calling it unreachable.
+ * @returns true when a TCP connection completed.
+ */
+function isReachable(host, port, timeoutMs = 1500) {
+  if (!host || !Number.isInteger(port) || port < 1) return Promise.resolve(false)
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host, port })
+    const finish = (reachable) => {
+      socket.destroy()
+      resolve(reachable)
+    }
+    socket.setTimeout(timeoutMs)
+    socket.once('connect', () => finish(true))
+    socket.once('timeout', () => finish(false))
+    socket.once('error', () => finish(false))
+  })
 }
 
 function resolveCollision(localDeviceId, remoteDeviceId, conn, existing) {
@@ -57,19 +106,20 @@ export async function startLinkService({
 
   let identity = await identityStore.load()
   if (!identity) {
-    identity = generateIdentity({ listenPort: listenPort || 48721 })
+    identity = generateIdentity({ listenPort: listenPort || DEFAULT_LISTEN_PORT })
     await identityStore.save(identity)
   }
 
   const savedPort = identity.listenPort && identity.listenPort > 0 ? identity.listenPort : 0
   const bindPort = listenPort === 0 ? savedPort : listenPort
-  const bindIdentity = { ...identity, listenPort: bindPort }
 
   const conns = new Map() // deviceId -> conn (or socket->conn until deviceId known)
   const pending = new Map() // deviceId -> { deviceId, role, code, host, port }
   let peers = await peerStore.list()
   const nearby = new Map() // deviceId -> { deviceId, displayName, host, port }
   const attempts = new Map() // deviceId -> attempt
+  const declaredPorts = new Map() // deviceId -> the listenPort its hello announced
+  const connectedPorts = new Map() // deviceId -> the port a completed connection used
   const pairResolvers = new Map() // tempKey -> resolve
   const outcomeResolvers = new Map() // deviceId -> resolve
   let stopped = false
@@ -133,6 +183,10 @@ export async function startLinkService({
 
   function registerConn(conn, key) {
     for (const [k, value] of conns.entries()) {
+      // Re-keying THIS connection (inbound: socket key -> the deviceId its
+      // hello revealed; outbound: a placeholder -> the real one). Removing the
+      // old key first is what keeps the collision branch below for two
+      // genuinely different sockets racing to the same deviceId.
       if (value === conn) { conns.delete(k); break }
     }
     const existing = conns.get(key)
@@ -170,7 +224,7 @@ export async function startLinkService({
     })
   }
 
-  function setupSocket(socket, localDialed, remoteHost, remotePort, knownPeer) {
+  function setupSocket(socket, localDialed, remoteHost, remotePort, knownPeer, fallbackPort, targetPort) {
     const role = localDialed ? 'initiator' : 'acceptor'
     let handshake = makeHandshake(socket, role, knownPeer, knownPeer?.deviceId || 'pending')
     const conn = {
@@ -182,6 +236,9 @@ export async function startLinkService({
       knownPeer,
       host: remoteHost,
       port: remotePort,
+      targetPort,
+      announcedPort: null,
+      fallbackPort,
       remoteDeviceId: knownPeer?.deviceId || null,
     }
     if (knownPeer) {
@@ -202,6 +259,12 @@ export async function startLinkService({
       // Capture remote deviceId from hello to re-key conn and pending.
       if (message.type === 'hello' && !conn.remoteDeviceId) {
         conn.remoteDeviceId = message.deviceId
+        // Protocol version 1 carries no listenPort; record its absence so a
+        // redial does not invent a port that peer never announced.
+        const announced = Number.isInteger(message.listenPort) ? message.listenPort : null
+        conn.announcedPort = announced
+        if (announced !== null) declaredPorts.set(message.deviceId, announced)
+        else declaredPorts.delete(message.deviceId)
         const kept = rekeyConn(conn, message.deviceId)
         if (!kept) return
         if (pending.has(socket)) {
@@ -223,6 +286,8 @@ export async function startLinkService({
         }
         if (role === 'acceptor') {
           if (!pending.has(message.deviceId)) {
+            // Placeholder until the handshake can compute the code in this
+            // same turn; the block below fills it in.
             pending.set(message.deviceId, {
               deviceId: message.deviceId,
               role: 'acceptor',
@@ -236,6 +301,9 @@ export async function startLinkService({
       handshake.receive(message)
       const code = handshake.code
       if (code) {
+        // The code exists from the first hello on, but the pending entry is
+        // created in the same turn that hello arrives — look it up by the
+        // remote deviceId, never by a key snapshot taken before receive().
         const devId = conn.remoteDeviceId
         if (devId) {
           const existing = pending.get(devId)
@@ -253,11 +321,15 @@ export async function startLinkService({
               pairResolvers.delete(devId)
               resolve()
             }
-          } else if (!existing) {
+          } else if (existing) {
+            // The acceptor side shows a code-entry row for this pairing, so
+            // the entry has to carry the code as soon as it is computable.
+            existing.code = code
+          } else {
             pending.set(devId, {
               deviceId: devId,
               role: 'acceptor',
-              code: null,
+              code,
               host: remoteHost,
               port: remotePort,
             })
@@ -278,21 +350,29 @@ export async function startLinkService({
     const peerId = outcome.peer?.deviceId
     if (outcome.ok) {
       const existing = findPeer(peerId)
+      // The port that reaches this peer: what its own hello announced when it
+      // dialed in (its source port would otherwise be recorded instead), else
+      // the local port of the socket that just authenticated.
+      const announced = outcome.peer.listenPort ?? conn.announcedPort
+      const listenPort = announced ?? conn.targetPort ?? conn.fallbackPort ?? conn.port
       const updated = {
         deviceId: outcome.peer.deviceId,
         displayName: outcome.peer.displayName,
         publicKey: outcome.peer.publicKey,
         lastHost: conn.host,
-        lastPort: conn.port,
+        lastPort: listenPort,
+        listenPort,
         enabled: true,
         pairedAt: existing?.pairedAt || Date.now(),
         hadConnected: true,
         failed: false,
         failure: null,
       }
+      // Persist on success, not only on enable/disable: a record left at the
+      // ephemeral port it was first written with is the dead address every
+      // later redial would use.
       await persistPeer(updated)
-      const peerRecord = findPeer(peerId)
-      if (peerRecord) peerRecord.hadConnected = true
+      connectedPorts.set(peerId, listenPort)
       conn.remoteDeviceId = peerId
       conn.state = 'open'
       pending.delete(peerId)
@@ -335,13 +415,26 @@ export async function startLinkService({
   const supervisor = createSupervisor({
     peers,
     dial: async (peer) => {
+      const declared = declaredPorts.get(peer.deviceId)
+      const port = portToDial(peer, connectedPorts.get(peer.deviceId), declared)
+      // One extra attempt, not a second retry loop: the stored port may be a
+      // peer's ephemeral source port, and the fallback is a port it announced
+      // on the authenticated connection. The backoff schedule is unchanged.
+      const fallback = port !== peer.listenPort && peer.listenPort !== undefined ? peer.listenPort : undefined
       try {
-        const socket = await dialImpl({ host: peer.lastHost, port: peer.lastPort })
-        setupSocket(socket, true, peer.lastHost, peer.lastPort, peer)
+        const socket = await dialImpl({ host: peer.lastHost, port })
+        setupSocket(socket, true, peer.lastHost, port, peer, fallback, port)
       } catch (error) {
         peer.failed = true
         peer.failure = '地址不可达'
-        throw error
+        if (fallback === undefined) throw error
+        let socket
+        try {
+          socket = await dialImpl({ host: peer.lastHost, port: fallback })
+        } catch {
+          throw error
+        }
+        setupSocket(socket, true, peer.lastHost, fallback, peer)
       }
     },
     schedule: (fn, ms) => setTimeout(fn, ms),
@@ -357,26 +450,31 @@ export async function startLinkService({
     })
   }
 
-  let server
-  try {
-    server = await startServer(bindPort)
-  } catch (error) {
-    if ((error.code === 'EADDRINUSE' || /EADDRINUSE/.test(error.message || '')) && bindPort !== 0) {
-      server = await startServer(0)
-    } else {
-      throw error
+  // A half-open range, not one port and not the OS ephemeral pool: an inbound
+  // rule can name the whole range, and restart-to-restart the bind lands in
+  // the same few ports instead of a random high one.
+  async function bindPortInRange(preferred) {
+    for (let port = preferred; port < preferred + PORT_RANGE_SIZE; port += 1) {
+      try {
+        return await startServer(port)
+      } catch (error) {
+        if (error.code !== 'EADDRINUSE' && !/EADDRINUSE/.test(error.message || '')) throw error
+      }
     }
+    return startServer(0)
   }
+
+  const server = await bindPortInRange(bindPort > 0 ? bindPort : DEFAULT_LISTEN_PORT)
 
   if (server.port !== identity.listenPort) {
     identity.listenPort = server.port
     await identityStore.save(identity)
   }
 
-  mdns.start(identity)
-
   mdns.onNearby((device) => {
     if (!device?.deviceId) return
+    // The browse stream carries this machine's own announcement too.
+    if (device.deviceId === identity.deviceId) return
     const peer = findPeer(device.deviceId)
     if (peer) {
       const conn = conns.get(device.deviceId)
@@ -384,13 +482,27 @@ export async function startLinkService({
       supervisor.noteAddress(device.deviceId, device.host, device.port, connected)
       return
     }
-    nearby.set(device.deviceId, {
-      deviceId: device.deviceId,
-      displayName: device.displayName,
-      host: device.host,
-      port: device.port,
+    // An unpaired candidate is only offered while it actually answers: a
+    // browse record survives the process that published it.
+    isReachable(device.host, device.port).then((ok) => {
+      if (stopped) return
+      if (!ok) {
+        nearby.delete(device.deviceId)
+        return
+      }
+      nearby.set(device.deviceId, {
+        deviceId: device.deviceId,
+        displayName: device.displayName,
+        host: device.host,
+        port: device.port,
+      })
     })
   })
+
+  // Announce only after the real bound port is known: `identity.listenPort`
+  // is written back just above, so the advertisement names a port that is
+  // actually accepting, including when the bind fell back to an ephemeral one.
+  mdns.start(identity)
 
   async function pair(host, port) {
     const socket = await dialImpl({ host, port })
@@ -477,3 +589,8 @@ export async function startLinkService({
 export function __resolveCollision(localDeviceId, remoteDeviceId, conn, existing) {
   return resolveCollision(localDeviceId, remoteDeviceId, conn, existing)
 }
+
+export function __portToDial(peer, connectedPort, declaredPort) {
+  return portToDial(peer, connectedPort, declaredPort)
+}
+

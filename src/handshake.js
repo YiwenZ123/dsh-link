@@ -3,6 +3,12 @@ import { assertPhase } from './frames.js'
 import { signNonce, verifyNonce } from './keys.js'
 import { shortCode } from './short-code.js'
 
+// The signed/subject body of a hello: unchanged since protocol version 1, and
+// deliberately NOT extended with `listenPort`. The six-digit code hashes this
+// body, so adding a field here would make a v1 peer derive a different code
+// from the same wire hello and the two sides would never agree. `listenPort`
+// travels as an extra hello field instead — it is read from an already
+// authenticated connection, which is enough for an address hint.
 function helloBody(hello) {
   return {
     protocolVersion: hello.protocolVersion,
@@ -11,6 +17,11 @@ function helloBody(hello) {
     publicKey: hello.publicKey,
     ephemeralPublicKey: hello.ephemeralPublicKey,
   }
+}
+
+/** A usable TCP port hint, or undefined for anything else (including absence). */
+function advertisedPort(value) {
+  return Number.isInteger(value) && value >= 1 && value <= 65535 ? value : undefined
 }
 
 export function createHandshake({ role, identity, knownPeer, attempt, now, send }) {
@@ -32,6 +43,7 @@ export function createHandshake({ role, identity, knownPeer, attempt, now, send 
       displayName: identity.displayName,
       publicKey: identity.publicKey,
       ephemeralPublicKey,
+      listenPort: identity.listenPort,
     }
     send(localHello)
   }
@@ -52,6 +64,9 @@ export function createHandshake({ role, identity, knownPeer, attempt, now, send 
         deviceId: remoteHello.deviceId,
         displayName: remoteHello.displayName,
         publicKey: remoteHello.publicKey,
+        // Absent from a protocol-version-1 hello that predates this field;
+        // callers fall back to the socket's peer port.
+        listenPort: advertisedPort(remoteHello.listenPort),
       },
     }
   }

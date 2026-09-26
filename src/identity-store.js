@@ -1,12 +1,13 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { readJson } from './read-json.js'
 
 export function createIdentityStore(dir) {
   const file = path.join(dir, 'identity.json')
   return {
     async load() {
       try {
-        return JSON.parse(await readFile(file, 'utf8'))
+        return await readJson(file)
       } catch (error) {
         if (error.code === 'ENOENT') return null
         throw error

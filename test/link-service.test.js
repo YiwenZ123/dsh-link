@@ -19,6 +19,27 @@ async function waitFor(fn, ms = 2000) {
   return fn()
 }
 
+/**
+ * Wait for a peer to report connected and return that record. A reconnect can
+ * spend up to one backoff interval (1s) between a failed dial and the retry,
+ * so asserting on a later snapshot instead of this return value reads
+ * `failed`/`reconnecting` on a slow machine.
+ * @param service - the running link service.
+ * @param deviceId - the peer to watch, or the first peer when omitted.
+ * @param ms - how long to wait before giving up.
+ * @returns the connected peer record.
+ */
+async function waitForConnected(service, deviceId, ms = 6000) {
+  const peer = await waitFor(() => {
+    const record = deviceId === undefined
+      ? service.snapshot().peers[0]
+      : service.snapshot().peers.find((item) => item.deviceId === deviceId)
+    return record?.status === 'connected' ? record : null
+  }, ms)
+  assert.ok(peer, `peer ${deviceId ?? ''} never reached connected`)
+  return peer
+}
+
 test('two services pair, restart, and reconnect from the switch without a new code', async () => {
   const leftHome = await tempHome()
   const rightHome = await tempHome()
@@ -32,17 +53,15 @@ test('two services pair, restart, and reconnect from the switch without a new co
     assert.match(pending.code, /^\d{6}$/)
     const rightPending = await waitFor(() => right.snapshot().pending[0] ? right.snapshot().pending[0] : null)
     await right.submitCode(rightPending.deviceId, pending.code)
-    await waitFor(() => left.snapshot().peers[0]?.status === 'connected')
-    assert.equal(left.snapshot().peers[0].status, 'connected')
-    const peerId = left.snapshot().peers[0].deviceId
+    const connected = await waitForConnected(left)
+    const peerId = connected.deviceId
     await left.stop()
     await right.stop()
     const leftAgain = await startLinkService({ home: leftHome, listenPort: 0 })
     const rightAgain = await startLinkService({ home: rightHome, listenPort: 0 })
     try {
       await leftAgain.setEnabled(peerId, true)
-      await waitFor(() => leftAgain.snapshot().peers.find((peer) => peer.deviceId === peerId)?.status === 'connected')
-      assert.equal(leftAgain.snapshot().peers.find((peer) => peer.deviceId === peerId).status, 'connected')
+      await waitForConnected(leftAgain, peerId)
       assert.equal(leftAgain.snapshot().pending.length, 0)
     } finally {
       await leftAgain.stop()
@@ -86,13 +105,11 @@ test('switching off closes the socket and switching on connects again', async ()
     const pending = await waitFor(() => left.snapshot().pending[0]?.code ? left.snapshot().pending[0] : null)
     const rightPending = await waitFor(() => right.snapshot().pending[0] ? right.snapshot().pending[0] : null)
     await right.submitCode(rightPending.deviceId, pending.code)
-    await waitFor(() => left.snapshot().peers[0]?.status === 'connected')
-    const peerId = left.snapshot().peers[0].deviceId
+    const peerId = (await waitForConnected(left)).deviceId
     await left.setEnabled(peerId, false)
     assert.equal(left.snapshot().peers[0].status, 'disabled')
     await left.setEnabled(peerId, true)
-    await waitFor(() => left.snapshot().peers[0]?.status === 'connected')
-    assert.equal(left.snapshot().peers[0].status, 'connected')
+    await waitForConnected(left, peerId)
   } finally {
     await left.stop()
     await right.stop()
@@ -181,6 +198,139 @@ test('snapshot peers includes failure when a dial fails with 地址不可达', a
       assert.equal(peer.failure, '地址不可达')
     } finally {
       await service.stop()
+    }
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('a taken preferred port walks the stable range instead of an OS ephemeral one', async () => {
+  const home = await tempHome()
+  const attempts = []
+  try {
+    const { createIdentityStore } = await import('../src/identity-store.js')
+    await createIdentityStore(home).save({
+      deviceId: '11111111-2222-4333-8444-555555555555',
+      displayName: 'win',
+      publicKey: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+      privateKey: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+      listenPort: 48721,
+      discoverable: true,
+    })
+    const service = await startLinkService({
+      home,
+      listenPort: 0,
+      listenImpl: async (identity) => {
+        attempts.push(identity.listenPort)
+        if (identity.listenPort < 48723) {
+          const error = new Error('listen EADDRINUSE: address already in use')
+          error.code = 'EADDRINUSE'
+          throw error
+        }
+        return { port: identity.listenPort, close: async () => {} }
+      },
+    })
+    try {
+      assert.deepEqual(attempts, [48721, 48722, 48723])
+      assert.equal(service.snapshot().local.port, 48723)
+      assert.equal((await createIdentityStore(home).load()).listenPort, 48723)
+    } finally {
+      await service.stop()
+    }
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('a first run without a saved port starts at the default instead of an ephemeral port', async () => {
+  const home = await tempHome()
+  const attempts = []
+  try {
+    const service = await startLinkService({
+      home,
+      listenPort: 0,
+      listenImpl: async (identity) => {
+        attempts.push(identity.listenPort)
+        return { port: identity.listenPort, close: async () => {} }
+      },
+    })
+    try {
+      assert.deepEqual(attempts, [48721])
+    } finally {
+      await service.stop()
+    }
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('the advertisement names the port that actually bound, even after a fallback', async () => {
+  const home = await tempHome()
+  const announced = []
+  try {
+    const { createMdns } = await import('../src/mdns.js')
+    const mdns = createMdns({
+      publish: (service) => { announced.push(service); return service },
+      unpublish: () => {},
+      browse: () => {},
+      stopBrowse: () => {},
+    })
+    const service = await startLinkService({
+      home,
+      listenPort: 0,
+      mdns,
+      listenImpl: async (identity) => {
+        // The whole stable range is taken, so the bind falls through to the
+        // OS-assigned port — the advertisement must name that one, never the
+        // port that failed to bind.
+        if (identity.listenPort !== 0) {
+          const error = new Error('listen EADDRINUSE: address already in use')
+          error.code = 'EADDRINUSE'
+          throw error
+        }
+        return { port: 61234, close: async () => {} }
+      },
+    })
+    try {
+      assert.equal(service.snapshot().local.port, 61234)
+      assert.equal(announced.length, 1)
+      assert.equal(announced[0].port, 61234)
+      assert.equal(announced[0].txt.deviceId, service.snapshot().local.deviceId)
+    } finally {
+      await service.stop()
+    }
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('nearby drops this machine itself and services whose address does not answer', async () => {
+  const home = await tempHome()
+  try {
+    const { createMdns } = await import('../src/mdns.js')
+    const { listen } = await import('../src/wire.js')
+    const own = await listen({ listenPort: 0 }, () => {})
+    const alive = await listen({ listenPort: 0 }, () => {})
+    let emit = null
+    const mdns = createMdns({
+      publish: (service) => service,
+      unpublish: () => {},
+      browse: (_query, onService) => { emit = onService },
+      stopBrowse: () => {},
+    })
+    const service = await startLinkService({ home, listenPort: 0, mdns })
+    try {
+      const local = service.snapshot().local
+      emit({ host: '127.0.0.1', port: own.port, txt: { deviceId: local.deviceId, displayName: local.displayName, ver: '1' } })
+      emit({ host: '127.0.0.1', port: alive.port, txt: { deviceId: 'aaaa1111-2222-4333-8444-555555555555', displayName: 'live', ver: '1' } })
+      emit({ host: '127.0.0.1', port: 1, txt: { deviceId: 'bbbb1111-2222-4333-8444-555555555555', displayName: 'dead', ver: '1' } })
+      const listed = await waitFor(() => service.snapshot().nearby.length === 1 && service.snapshot().nearby, 4000)
+      assert.deepEqual(listed.map((device) => device.deviceId), ['aaaa1111-2222-4333-8444-555555555555'])
+      assert.equal(service.snapshot().nearby.some((device) => device.deviceId === local.deviceId), false)
+    } finally {
+      await service.stop()
+      await own.close()
+      await alive.close()
     }
   } finally {
     await rm(home, { recursive: true, force: true })

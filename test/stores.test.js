@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readdir, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -39,6 +39,27 @@ test('identity and peers survive a new store on the same directory', async () =>
     assert.equal(again.displayName, 'win')
     await createPeerStore(dir).remove(peerId)
     assert.equal(await createPeerStore(dir).get(peerId), null)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a UTF-8 BOM prepended by a Windows editor does not break the stores', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'dsh-link-'))
+  try {
+    const identity = generateIdentity({ displayName: 'win', listenPort: 48721 })
+    const peerId = '11111111-2222-4333-8444-555555555555'
+    await mkdir(path.join(dir, 'peers'), { recursive: true })
+    await writeFile(path.join(dir, 'identity.json'), `\uFEFF${JSON.stringify(identity)}`)
+    await writeFile(
+      path.join(dir, 'peers', `${peerId}.json`),
+      `\uFEFF${JSON.stringify({ deviceId: peerId, displayName: 'mac', publicKey: 'cHVi' })}`,
+    )
+    const loaded = await createIdentityStore(dir).load()
+    assert.equal(loaded.privateKey, identity.privateKey)
+    assert.equal(loaded.listenPort, 48721)
+    assert.equal((await createPeerStore(dir).get(peerId)).displayName, 'mac')
+    assert.equal((await createPeerStore(dir).list()).length, 1)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
