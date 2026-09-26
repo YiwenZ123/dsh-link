@@ -18,13 +18,7 @@ export function createSupervisor({ peers, dial, schedule, cancel }) {
     const step = Math.min(attempts.get(deviceId) ?? 0, BACKOFF.length - 1)
     const handle = schedule(() => {
       attempts.set(deviceId, step + 1)
-      dial(current)
-        .then(() => {
-          attempts.set(deviceId, 0)
-          clear(deviceId)
-        })
-        .catch(() => {})
-      arm(deviceId)
+      dial(current).then(() => attempts.set(deviceId, 0)).catch(() => arm(deviceId))
     }, BACKOFF[step])
     timers.set(deviceId, handle)
   }

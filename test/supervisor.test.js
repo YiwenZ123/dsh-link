@@ -2,15 +2,20 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createSupervisor } from '../src/supervisor.js'
 
-test('an enabled peer redials at 1s, 2s, 4s, then 15s', () => {
+test('an enabled peer redials at 1s, 2s, 4s, then 15s', async () => {
   const waits = []
   const dials = []
   let clock = 0
+  let lastDial = Promise.resolve()
   const timers = []
   const peers = [{ deviceId: 'b', enabled: true, lastHost: '10.0.0.2', lastPort: 9 }]
   const supervisor = createSupervisor({
     peers,
-    dial: (peer) => { dials.push(clock); return Promise.reject(new Error('地址不可达')) },
+    dial: (peer) => {
+      dials.push(clock)
+      lastDial = Promise.reject(new Error('地址不可达'))
+      return lastDial
+    },
     now: () => clock,
     schedule: (fn, ms) => {
       waits.push(ms)
@@ -25,6 +30,7 @@ test('an enabled peer redials at 1s, 2s, 4s, then 15s', () => {
     assert.equal(waits.at(-1), expected)
     clock += expected
     timers.at(-1).fn()
+    await lastDial.catch(() => {})
   }
   supervisor.setEnabled('b', false)
   assert.equal(timers.at(-1).cancelled, true)
