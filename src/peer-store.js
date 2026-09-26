@@ -1,5 +1,6 @@
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { readJson } from './read-json.js'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -23,7 +24,7 @@ export function createPeerStore(dir) {
         const peers = []
         for (const name of names) {
           if (!name.endsWith('.json')) continue
-          peers.push(JSON.parse(await readFile(path.join(peersDir, name), 'utf8')))
+          peers.push(await readJson(path.join(peersDir, name)))
         }
         return peers
       } catch (error) {
@@ -33,7 +34,7 @@ export function createPeerStore(dir) {
     },
     async get(deviceId) {
       try {
-        return JSON.parse(await readFile(peerPath(dir, deviceId), 'utf8'))
+        return await readJson(peerPath(dir, deviceId))
       } catch (error) {
         if (error.code === 'ENOENT') return null
         throw error
