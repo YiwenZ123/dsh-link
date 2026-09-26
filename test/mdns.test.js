@@ -25,7 +25,7 @@ test('a discovered service becomes a nearby device', () => {
   })
   mdns.onNearby((device) => { found = device })
   mdns.start({ deviceId: 'abc', displayName: 'mac', listenPort: 48721, discoverable: true })
-  browser({ host: '10.0.0.8', port: 48721, txt: { deviceId: 'peer', displayName: 'win', ver: '1' } })
+  browser({ host: '10.0.0.8.local', addresses: ['10.0.0.8'], port: 48721, txt: { deviceId: 'peer', displayName: 'win', ver: '1' } })
   assert.deepEqual(found, { deviceId: 'peer', displayName: 'win', host: '10.0.0.8', port: 48721 })
 })
 
@@ -41,8 +41,8 @@ test('the machine\'s own advertisement is not offered as a nearby device', () =>
   mdns.onNearby((device) => found.push(device))
   const identity = { deviceId: 'abc', displayName: 'mac', listenPort: 48721, discoverable: true }
   mdns.start(identity)
-  browser({ host: '10.0.0.9', port: 48721, txt: { deviceId: 'abc', displayName: 'mac', ver: '1' } })
-  browser({ host: '10.0.0.8', port: 48721, txt: { deviceId: 'peer', displayName: 'win', ver: '1' } })
+  browser({ host: '10.0.0.9.local', addresses: ['10.0.0.9'], port: 48721, txt: { deviceId: 'abc', displayName: 'mac', ver: '1' } })
+  browser({ host: '10.0.0.8.local', addresses: ['10.0.0.8'], port: 48721, txt: { deviceId: 'peer', displayName: 'win', ver: '1' } })
   assert.deepEqual(found.map((device) => device.deviceId), ['peer'])
 })
 

@@ -14,6 +14,10 @@ import path from 'node:path'
 const DEFAULT_LISTEN_PORT = 48721
 const PORT_RANGE_SIZE = 10
 const IPV4_RE = /^\d{1,3}(?:\.\d{1,3}){3}$/
+// RFC 2544's benchmark range, which a proxy in fake-IP mode hands out for names
+// it cannot answer. Such an address is syntactically fine and never answers, so
+// it must not replace a record's real address.
+const FAKE_IP_RE = /^198\.18\./
 
 const noopMdns = createMdns({
   publish: () => null,
@@ -171,10 +175,14 @@ export async function startLinkService({
    * @param socket - the socket that completed the handshake.
    * @returns the address to store in the peer record.
    */
+  function literalAddress(value) {
+    return typeof value === 'string' && IPV4_RE.test(value) && !FAKE_IP_RE.test(value)
+  }
+
   function dialableHost(host, socket) {
-    if (typeof host === 'string' && IPV4_RE.test(host)) return host
+    if (literalAddress(host)) return host
     const remote = socket?._socket?.remoteAddress?.replace(/^::ffff:/, '')
-    return IPV4_RE.test(remote) ? remote : host
+    return literalAddress(remote) ? remote : host
   }
 
   async function persistPeer(peer) {
@@ -525,6 +533,11 @@ export async function startLinkService({
   // actually accepting, including when the bind fell back to an ephemeral one.
   mdns.start(identity)
 
+  /** The address predicate, exposed so a test can assert it without a peer. */
+  function __literalAddress(value) {
+    return literalAddress(value)
+  }
+
   async function pair(host, port) {
     const socket = await dialImpl({ host, port })
     const codeReady = new Promise((resolve) => pairResolvers.set(socket, resolve))
@@ -597,6 +610,7 @@ export async function startLinkService({
 
   return {
     snapshot,
+    __literalAddress,
     pair,
     submitCode,
     setEnabled,

@@ -321,9 +321,9 @@ test('nearby drops this machine itself and services whose address does not answe
     const service = await startLinkService({ home, listenPort: 0, mdns })
     try {
       const local = service.snapshot().local
-      emit({ host: '127.0.0.1', port: own.port, txt: { deviceId: local.deviceId, displayName: local.displayName, ver: '1' } })
-      emit({ host: '127.0.0.1', port: alive.port, txt: { deviceId: 'aaaa1111-2222-4333-8444-555555555555', displayName: 'live', ver: '1' } })
-      emit({ host: '127.0.0.1', port: 1, txt: { deviceId: 'bbbb1111-2222-4333-8444-555555555555', displayName: 'dead', ver: '1' } })
+      emit({ host: '127.0.0.1', addresses: ['127.0.0.1'], port: own.port, txt: { deviceId: local.deviceId, displayName: local.displayName, ver: '1' } })
+      emit({ host: '127.0.0.1', addresses: ['127.0.0.1'], port: alive.port, txt: { deviceId: 'aaaa1111-2222-4333-8444-555555555555', displayName: 'live', ver: '1' } })
+      emit({ host: '127.0.0.1', addresses: ['127.0.0.1'], port: 1, txt: { deviceId: 'bbbb1111-2222-4333-8444-555555555555', displayName: 'dead', ver: '1' } })
       const listed = await waitFor(() => service.snapshot().nearby.length === 1 && service.snapshot().nearby, 4000)
       assert.deepEqual(listed.map((device) => device.deviceId), ['aaaa1111-2222-4333-8444-555555555555'])
       assert.equal(service.snapshot().nearby.some((device) => device.deviceId === local.deviceId), false)
@@ -382,6 +382,7 @@ test('a discovered address that stops answering does not take the host boot down
     })
     emit({
       host: '127.0.0.1',
+      addresses: ['127.0.0.1'],
       port: 1,
       txt: { deviceId: peerId, displayName: 'gone', ver: '1' },
     })
