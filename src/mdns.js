@@ -30,12 +30,16 @@ export function createMdns({ publish, unpublish, browse, stopBrowse }) {
         published = null
         return
       }
-      // A probe conflict stops the advertisement without telling us. That
-      // costs discovery only: the listen port is still open and manual
-      // addresses still work, so publishing is never allowed to fail start().
+      // The instance name must identify this device, not describe it. Two
+      // machines that share a display name — the common case, since both read
+      // the same host name pattern — collide here, and the responder keeps the
+      // first claim and silently drops the second: the other side's switch
+      // looks on while nothing is ever advertised, and no JS error is raised
+      // for the catch below to report. The device id is unique, and the name a
+      // human reads is the txt `displayName`, which browse results carry.
       try {
         published = publish({
-          name: `${identity.displayName} (${String(identity.deviceId).slice(0, 8)})`,
+          name: `dsh-link-${String(identity.deviceId).slice(0, 8)}`,
           type: SERVICE,
           port: identity.listenPort,
           txt: { deviceId: identity.deviceId, displayName: identity.displayName, ver: '1' },
